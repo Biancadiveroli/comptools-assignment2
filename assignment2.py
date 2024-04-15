@@ -1,88 +1,103 @@
 import numpy as np
-import matplotlib.pyplot as plt
+import scipy 
+from scipy.stats import norm, multivariate_normal
 
-# Define the function and its derivative
-def f(x):
-    return x**2 - np.log(x)
+def unconditional_ar_mean_variance(c, phis, sigma2):
+    ## The length of phis is p
+    p = len(phis)
+    A = np.zeros((p, p))
+    A[0, :] = phis
+    A[1:, 0:(p-1)] = np.eye(p-1)
+    ## Check for stationarity
+    eigA = np.linalg.eig(A)
+    if all(np.abs(eigA.eigenvalues)<1):
+        stationary = True
+    else:
+        stationary = False
+    # Create the vector b
+    b = np.zeros((p, 1))
+    b[0, 0] = c
+    
+    # Compute the mean using matrix algebra
+    I = np.eye(p)
+    mu = np.linalg.inv(I - A) @ b
+    
+    # Solve the discrete Lyapunov equation
+    Q = np.zeros((p, p))
+    Q[0, 0] = sigma2
+    #Sigma = np.linalg.solve(I - np.kron(A, A), Q.flatten()).reshape(7, 7)
+    Sigma = scipy.linalg.solve_discrete_lyapunov(A, Q)
+    
+    return mu.ravel(), Sigma, stationary
 
-def df(x):
-    return 2*x - 1/x
+# Example usage:
+phis = [0.2, -0.1, 0.05, -0.05, 0.02, -0.02, 0.01]
+c = 0
+sigma2 = 0.5
+mu, Sigma, stationary = unconditional_ar_mean_variance(c, phis, sigma2)
+print("The process is stationary:", stationary)
+print("Mean vector (mu):", mu)
+print("Variance-covariance matrix (Sigma);", Sigma)
 
-def connectpoints(x,y,p1,p2):
-    x1, x2 = x[p1], x[p2]
-    y1, y2 = y[p1], y[p2]
-    plt.plot([x1,x2],[y1,y2],'k-')
+
+def lagged_matrix(Y, max_lag=7):
+    n = len(Y)
+    lagged_matrix = np.full((n, max_lag), np.nan)    
+    # Fill each column with the appropriately lagged data
+    for lag in range(1, max_lag + 1):
+        lagged_matrix[lag:, lag - 1] = Y[:-lag]
+    return lagged_matrix
 
 
-# Initial point
-x0 = 2
-alpha = 0.3
+def cond_loglikelihood_ar7(params, y):
+    c = params[0] 
+    phi = params[1:8]
+    sigma2 = params[8]
+    mu, Sigma, stationary = unconditional_ar_mean_variance(c, phi, sigma2)
+    ## We could check that at phis the process is stationary and return -Inf if it is not
+    if not(stationary):
+        return -np.inf
+    ## The distribution of 
+    # y_t|y_{t-1}, ..., y_{t-7} ~ N(c+\phi_{1}*y_{t-1}+...+\phi_{7}y_{t-7}, sigma2)
+    ## Create lagged matrix
+    X = lagged_matrix(y, 7)
+    yf = y[7:]
+    Xf = X[7:,:]
+    loglik = np.sum(norm.logpdf(yf, loc=(c + Xf@phi), scale=np.sqrt(sigma2)))
+    return loglik
 
-# Gradient descent update
-x1 = x0 - alpha * df(x0)
-x2 = x1 - alpha * df(x1)
-# Points for the function plot
-x = np.linspace(-2.5, 2.5, 400)
-y = f(x)
+def uncond_loglikelihood_ar7(params, y):
+    ## The unconditional loglikelihood
+    ## is the unconditional "plus" the density of the
+    ## first p (7 in our case) observations
+    cloglik = cond_loglikelihood_ar7(params, y)
 
-# Tangent line at x0 (y = m*x + b)
+    ## Calculate initial
+    # y_1, ..., y_7 ~ N(mu, sigma_y)
+    c = params[0] 
+    phi = params[1:8]
+    sigma2 = params[8]
+    mu, Sigma, stationary = unconditional_ar_mean_variance(c, phi, sigma2)
+    if not(stationary):
+        return -np.inf
+    mvn = multivariate_normal(mean=mu, cov=Sigma, allow_singular=True)
+    uloglik = cloglik + mvn.logpdf(y[0:7])
+    return uloglik
+    
 
-# Creating the plot
+## Example
+params = np.array([
+    0.0, ## c
+    0.2, -0.1, 0.05, -0.05, 0.02, -0.02, 0.01, ## phi
+    1.0 ## sigma2    
+    ])
 
-plt.figure(figsize=(8, 5))
-plt.plot(x, y, label='f(x) = x^2')
-plt.scatter([x0, x1], [f(x0), f(x1)], color='red')  # Points
-m = df(x0)
-b = f(x0) - m*x0
-tangent_line = m*x + b
-plt.plot(x, tangent_line, 'b--', label=f'Tangent at x0={x0}')
-plt.arrow(x0, 0.4, x1-x0, 0.0, head_width=0.1, length_includes_head=True, color = 'r')
+## Fake data
+y = np.random.normal(size=100)
 
-m = df(x1)
-b = f(x1) - m*x1
-tangent_line = m*x + b
-plt.plot(x, tangent_line, 'b--', label=f'Tangent at x0={x1}', )
-plt.ylim([-0.2,6])
-plt.xlim([-0.4,3])
-plt.plot(x, tangent_line, 'b--', label=f'Tangent at x0={x1}', )
-m = df(x0)
-b = f(x0) - m*x0
-tangent_line = m*x + b
+## The conditional distribution
+a=cond_loglikelihood_ar7(params, y)
+## The unconditional distribution
+b=uncond_loglikelihood_ar7(params, y)
 
-plt.scatter(x0, f(x0), color='green')  # Initial point
-plt.scatter(x1, f(x1), color='green')  # Next point after step
-plt.scatter(x2, f(x2), color='green')  # Next point after step
-
-plt.arrow(x1, 0., x2-x1, 0., head_width=0.1, length_includes_head=True, color = 'r')
-
-plt.title('Gradient Descent on f(x)')
-plt.xlabel('x')
-plt.ylabel('f(x)')
-plt.xticks([])  # Remove x-axis ticks
-plt.xticks([x0, x1, x2], [r"$x^{(0)}$", r"$x^{(1)}$", r"$x^{(2)}$"])
-#plt.legend()
-plt.grid(True)
-plt.plot([x0, x0],[f(x0), 0],'g--')
-plt.plot([x1, x1],[f(x1), 0],'g--')
-plt.plot([x2, x2],[f(x1), 0],'g--')
-plt.show()
-from numpy import linalg as la
-
-def steepest_descent(f, gradient, initial_guess, learning_rate, num_iterations = 100, epsilon_g = 1e-07):
-    x = initial_guess
-    for i in range(num_iterations):
-        grad = gradient(x)
-        x = x - learning_rate * grad
-        normg = la.norm(grad)
-        print(f"Iteration {i+1}: x = {x}, f(x) = {f(x)}, ||g(x)||={normg}")
-        ## Termination condition
-        if  normg < epsilon_g:
-            break
-    return x
-def f(x):
-    return np.sum((x-3.0)**2)
-
-def gradient(x):
-    return 2*(x-3.0)
-
-steepest_descent(f, gradient, np.array([0., 0.]), 0.2)
+print(a,b)
